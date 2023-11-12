@@ -10,7 +10,7 @@ asymmertry = (
 )
 
 if __name__ == "__main__":
-    shutil.rmtree(f"output")
+    shutil.rmtree(f"output", ignore_errors=True)
     os.mkdir(f"output")
     for file_name in os.listdir("./samples"):
         for _ in range(retry_times):
