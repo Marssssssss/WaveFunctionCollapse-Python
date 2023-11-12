@@ -1,4 +1,3 @@
-import copy
 import json
 import os
 import random
@@ -47,7 +46,8 @@ class Model(object):
         self.pattern_propagator = {}  # 模式之间的关联，{模式编号：{邻接方向常量：模式编号列表}}
         self.ban_stack = []  # 坍塌栈，记录节点状态坍塌顺序
         self.waves = []  # 状态图，记录所有节点目前的可能状态，当坍塌完成后要么每个节点只有一个状态，要么坍塌失败
-        self.compatible = {}  # 和状态图对应，每个节点上每个状态的可能性数量，当周围所有可能邻接这个状态的其它节点状态都坍塌为不可能后，这个节点上的这个状态就坍塌为不可能，对应 compatible 值变为 0
+        self.state_probability_count = {}  # 记录每个节点的每个状态的最大可能数量
+        self.compatible = {}  # 和状态图对应，每个节点上每个状态的已确定数量
         # 读取图片
         self.load_pattens()
 
@@ -66,7 +66,7 @@ class Model(object):
         """
         self.waves[y][x].discard(state)
         for direction in Model.DIRECTIONS:
-            self.compatible[y][x][state][direction] = 0
+            self.compatible[y][x][state][direction] = self.state_probability_count[state][direction]
         self.ban_stack.append((y, x, state))
 
     def generate(self, width, height):
@@ -79,12 +79,14 @@ class Model(object):
         self.waves = [[set(self.pattern_propagator.keys()) for _ in range(width)] for _ in range(height)]
 
         # 构造可能性数量映射
-        state_probablity_count = {state: {direction: 0 for direction in Model.DIRECTIONS} for state in self.pattern_propagator.keys()}
+        self.state_probability_count = {state: {direction: 0 for direction in Model.DIRECTIONS} for state in self.pattern_propagator.keys()}
         for other_direction_states in self.pattern_propagator.values():
             for direction, other_states in other_direction_states.items():
                 for other_state in other_states:
-                    state_probablity_count[other_state][direction] += 1
-        self.compatible = [[copy.deepcopy(state_probablity_count) for _ in range(width)] for _ in range(height)]
+                    self.state_probability_count[other_state][direction] += 1
+        self.compatible = [
+            [{state: {direction: 0 for direction in Model.DIRECTIONS} for state in self.pattern_propagator.keys()} for _ in range(width)] for _ in
+            range(height)]
 
         # 坍塌
         while True:
@@ -116,8 +118,11 @@ class Model(object):
 
                     eliminate_states = self.pattern_propagator[state][direction]
                     for eliminate_state in eliminate_states:
-                        self.compatible[target_y][target_x][eliminate_state][direction] -= 1
-                        if self.compatible[target_y][target_x][eliminate_state][direction] == 0:
+                        if eliminate_state not in self.waves[target_y][target_x]:
+                            continue
+                        self.compatible[target_y][target_x][eliminate_state][direction] += 1
+                        if self.compatible[target_y][target_x][eliminate_state][direction] == self.state_probability_count[eliminate_state][
+                            direction]:
                             self.ban(target_y, target_x, eliminate_state)
 
     def get_unobserved_node(self):
@@ -164,12 +169,13 @@ class Model(object):
 
 class OverlappingModel(Model):
 
-    def __init__(self, image_path, pattern_size):
+    def __init__(self, image_path, pattern_size, asymmertry=False):
         self.colors = {}  # 将 rgb 值映射到一个 int 值，主要目的是简化 hash 运算
         self.pattern_hashes = {}  # 模式 hash 集合，用来去重
         self.patterns = []  # 所有的从原图中抠出来的指定模式尺寸的模式，索引值为模式编号
         self.pattern_size = pattern_size  # 模式尺寸
         self.image_path = image_path
+        self.asymmertry = asymmertry
         super(OverlappingModel, self).__init__()
 
     def pattern_hash(self, pixels):
@@ -194,7 +200,7 @@ class OverlappingModel(Model):
         print(f"[{self.__class__.__name__}] Loading image: {self.image_path}!")
         if not os.path.exists(self.image_path):
             return False
-        image = Image.open(self.image_path)
+        image = Image.open(self.image_path).convert("RGBA")
 
         # 读取像素值，对颜色进行映射
         print(f"[{self.__class__.__name__}] Mapping colors!")
@@ -244,11 +250,14 @@ class OverlappingModel(Model):
         width, height = image.size
         pattern = [[image.getpixel(((left_top_x + dx) % width, (left_top_y + dy) % height)) for dx in range(self.pattern_size)] for dy in
                    range(self.pattern_size)]
-        for _ in range(4):
+        if self.asymmertry:
             self._add_pattern(pattern)
-            reflect_pattern = reflect(pattern, self.pattern_size)
-            self._add_pattern(reflect_pattern)
-            pattern = rotate(pattern, self.pattern_size)
+        else:
+            for _ in range(4):
+                self._add_pattern(pattern)
+                reflect_pattern = reflect(pattern, self.pattern_size)
+                self._add_pattern(reflect_pattern)
+                pattern = rotate(pattern, self.pattern_size)
 
     def _add_pattern(self, pattern):
         """ 如果模式不重复，就加到模式列表里
